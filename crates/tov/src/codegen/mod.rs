@@ -1469,6 +1469,10 @@ impl<'c, 'a> Gen<'c, 'a> {
             return;
         }
         let ItemKind::Function(f) = &self.ast(inst.m).items[inst.item as usize].kind else { return };
+        if f.is_extern {
+            self.emit_extern(&inst, f.name);
+            return;
+        }
         let sig = self.c.sigs[&(inst.m, inst.item)].clone();
         let proto = self.fn_proto(&inst.cname, &sig.params, sig.ret, &inst.subst, false);
         let params: Vec<(u32, TyId, bool)> = f.params.iter().zip(&sig.params).map(|(p, fp)| (p.span.start, self.c.types.subst(fp.ty, &inst.subst), fp.inout)).collect();
@@ -1498,6 +1502,47 @@ impl<'c, 'a> Gen<'c, 'a> {
         }
         let code = self.function_body(inst.m, inst.subst.clone(), &params, ret, body::FnBodyKind::Block(f.body), Some(entry_unique), None, None);
         let _ = writeln!(self.funcs, "static {proto} {{\n{code}}}\n");
+    }
+
+    /// A `declare function`: a C prototype of the foreign function plus a wrapper with the usual instance
+    /// signature that converts the arguments (a string is its NUL-terminated bytes, an array a pointer to its
+    /// elements) and the result, so calls to it are ordinary Tov calls.
+    fn emit_extern(&mut self, inst: &Instance, name: crate::intern::Sym) {
+        let sig = self.c.sigs[&(inst.m, inst.item)].clone();
+        let symbol = self.sym(name).to_string();
+        let proto = self.fn_proto(&inst.cname, &sig.params, sig.ret, &inst.subst, false);
+        let mut cparams: Vec<String> = Vec::new();
+        let mut args: Vec<String> = Vec::new();
+        for (i, p) in sig.params.iter().enumerate() {
+            match self.tget(p.ty) {
+                Ty::Str => {
+                    cparams.push("const char *".into());
+                    args.push(format!("p{i}.p->data"));
+                }
+                Ty::Array(e) => {
+                    let ct = self.ctype(e);
+                    cparams.push(format!("{ct} *"));
+                    args.push(format!("(({ct} *)tv_arr_data(p{i}))"));
+                }
+                _ => {
+                    let ct = self.ctype(p.ty);
+                    cparams.push(ct);
+                    args.push(format!("p{i}"));
+                }
+            }
+        }
+        let call = format!("{symbol}({})", args.join(", "));
+        let (cret, body) = match self.tget(sig.ret) {
+            Ty::Void => ("void".to_string(), format!("{call};")),
+            Ty::Str => ("const char *".to_string(), format!("const char *r_ = {call}; return r_ ? tv_str_from(r_, strlen(r_)) : TV_EMPTY_STR;")),
+            _ => {
+                let ct = self.ctype(sig.ret);
+                (ct, format!("return {call};"))
+            }
+        };
+        let params = if cparams.is_empty() { "void".to_string() } else { cparams.join(", ") };
+        let _ = writeln!(self.protos, "extern {cret} {symbol}({params});");
+        let _ = writeln!(self.funcs, "static {proto} {{ {body} }}\n");
     }
 
     /// Accumulator recursion elimination for checked integer `+`: a function like

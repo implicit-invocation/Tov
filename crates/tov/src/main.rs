@@ -24,6 +24,7 @@ and `add` only explain that.
 
 build options: -O0 | -O1 | -O2 | -O3 (default) | -Os, --time,
                --unchecked (integer overflow wraps instead of trapping, like Rust release builds),
+               --link <file.c|.m|.o|.a or linker flags> (repeatable: the C behind `declare function`s),
                -g (keep function names and debug info, for debuggers and profilers)
 watch:         --watch (with run, test or build: rebuild when a source file changes, and
                restart the program), --no-clear-screen, --watch-kill-signal=SIGTERM
@@ -183,6 +184,7 @@ struct Flags {
     opt: String,
     unchecked: bool,
     symbols: bool,
+    link: Vec<String>,
     time: bool,
     watch: bool,
     clear_screen: bool,
@@ -201,6 +203,7 @@ fn parse_flags(args: &[String], cmd: &BuildCmd) -> Result<Flags, ExitCode> {
         opt: "-O3".to_string(),
         unchecked: false,
         symbols: false,
+        link: Vec::new(),
         time: false,
         watch: false,
         clear_screen: true,
@@ -222,6 +225,16 @@ fn parse_flags(args: &[String], cmd: &BuildCmd) -> Result<Flags, ExitCode> {
             "--emit-c" => {
                 i += 1;
                 f.emit_c = args.get(i).map(PathBuf::from);
+            }
+            "--link" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => f.link.push(v.clone()),
+                    None => {
+                        eprintln!("error: --link needs a value: a C / Objective-C source, an object or archive, or linker flags (\"-framework Cocoa\")");
+                        return Err(ExitCode::from(2));
+                    }
+                }
             }
             "--time" => f.time = true,
             "--unchecked" => f.unchecked = true,
@@ -315,7 +328,7 @@ fn execute(f: Flags, cmd: BuildCmd) -> ExitCode {
     }
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mode = if cmd == BuildCmd::Test { tov::codegen::Mode::Test } else { tov::codegen::Mode::Run };
-    let opts = tov::build::Options { mode, unchecked: f.unchecked, opt: f.opt, emit_c: f.emit_c, symbols: f.symbols };
+    let opts = tov::build::Options { mode, unchecked: f.unchecked, opt: f.opt, emit_c: f.emit_c, symbols: f.symbols, link: f.link };
     let dest = f.out.unwrap_or_else(|| {
         let stem = paths[0].file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "main".into());
         PathBuf::from(if stem == "." || stem.is_empty() { "main".to_string() } else { stem })

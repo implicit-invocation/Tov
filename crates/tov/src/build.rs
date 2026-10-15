@@ -56,6 +56,9 @@ pub struct Options {
     /// Keep function names and C debug info (`tov build -g`) for debuggers and profilers;
     /// otherwise local symbols are stripped (smaller binaries).
     pub symbols: bool,
+    /// Extra link inputs (`--link`): C / Objective-C sources (compiled with the program), objects, archives
+    /// and linker flags (`-framework Cocoa`, `-lfoo`) for the functions a program `declare`s.
+    pub link: Vec<String>,
 }
 
 /// The files on disk behind a source map (not the standard library's built-in modules).
@@ -340,10 +343,32 @@ pub fn build(paths: &[PathBuf], base: &Path, opts: &Options) -> Result<Built, Bu
         None => String::new(),
         Some(j) => hash_hex(&[JS_C.as_bytes(), NODE_C.as_bytes(), NAPI_C.as_bytes(), codegen::JS_H.as_bytes(), codegen::RUNTIME_H.as_bytes(), cc.as_bytes(), flag_text.as_bytes(), JIT_ENTITLEMENTS.as_bytes(), j.cflags.join(" ").as_bytes(), j.libs.join(" ").as_bytes()]),
     };
+    // `--link` inputs: sources are compiled below (and cached by content); the rest goes to the linker as given.
+    let mut link_sources: Vec<(PathBuf, String)> = Vec::new();
+    let mut link_args: Vec<String> = Vec::new();
+    let mut link_text = String::new();
+    for item in &opts.link {
+        for tok in item.split_whitespace() {
+            let path = Path::new(tok);
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if path.is_file() {
+                let bytes = std::fs::read(path).map_err(|e| BuildError::Message(format!("can't read {tok}: {e}")))?;
+                let digest = hash_hex(&[tok.as_bytes(), &bytes]);
+                link_text.push_str(&digest);
+                if matches!(ext, "c" | "m" | "mm" | "cc" | "cpp") {
+                    link_sources.push((path.to_path_buf(), digest));
+                    continue;
+                }
+            } else {
+                link_text.push_str(tok);
+            }
+            link_args.push(tok.to_string());
+        }
+    }
     // Link flags (see below) are part of what a cached binary was built with.
     let tls_key = tls.as_ref().map(|t| t.key.clone()).unwrap_or_default();
     let lld = use_lld(&cc);
-    let key = hash_hex(&[c_src.as_bytes(), rt_key.as_bytes(), LINK_FLAGS.as_bytes(), if lld { b"lld" } else { b"ld" }, tls_key.as_bytes(), js_key.as_bytes()]);
+    let key = hash_hex(&[c_src.as_bytes(), rt_key.as_bytes(), LINK_FLAGS.as_bytes(), if lld { b"lld" } else { b"ld" }, tls_key.as_bytes(), js_key.as_bytes(), link_text.as_bytes()]);
     let dir = cache_dir();
     let bin_dir = dir.join("bin");
     let binary = bin_dir.join(&key);
@@ -434,6 +459,26 @@ pub fn build(paths: &[PathBuf], base: &Path, opts: &Options) -> Result<Built, Bu
         cmd.args(extra.split_whitespace()).arg("-o").arg(&tmp).arg(&obj);
     }
     cmd.arg(&rt_obj);
+    // the program's own C / Objective-C (`--link`): compiled with the optimization level only (no `-std`: it may be C++)
+    for (src, digest) in &link_sources {
+        let obj_path = c_dir.join(format!("link-{digest}.o"));
+        if !cached(&obj_path) {
+            let tmp_obj = c_dir.join(format!("link-{digest}.tmp{}.o", std::process::id()));
+            let mut compile = Command::new(&cc);
+            compile.arg(&opts.opt).arg("-w");
+            if matches!(src.extension().and_then(|e| e.to_str()), Some("m" | "mm")) {
+                compile.arg("-fobjc-arc");
+            }
+            if let Some(sdk) = &sysroot {
+                compile.arg("-isysroot").arg(sdk);
+            }
+            compile.arg("-c").arg("-o").arg(&tmp_obj).arg(src);
+            run_cc(compile, &cc, src)?;
+            std::fs::rename(&tmp_obj, &obj_path).map_err(|e| BuildError::Message(format!("can't move {} into the cache: {e}", src.display())))?;
+        }
+        cmd.arg(&obj_path);
+    }
+    cmd.args(&link_args);
     if lld {
         cmd.arg("-fuse-ld=lld");
     }

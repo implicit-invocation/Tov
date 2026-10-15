@@ -244,6 +244,27 @@ client.write("hello")
 - `Socket`: `write(text | bytes)`, `end(data?)`, `flush()`, `terminate()`, `shutdown()`, `setNoDelay(on?)`, `ref()`, `unref()`, `data`, `remoteAddress`, `remotePort`, `localAddress`, `localPort`, `bufferedAmount` (Tov). Unlike Bun's, `write` takes everything: what the kernel can't take yet is buffered (Bun returns a short count and drops the rest), and `drain` follows once it's out. Writes made in a handler go out together when it returns: one system call for many small writes.
 - `end()` closes the socket once its data is out (`close` runs); with `allowHalfOpen` it shuts only the sending side, and the peer can keep sending. A handler that throws hands the error to `error`, else it's logged and the socket closes. A connect's `socket.data` is `T | undefined` (`T` from `data`, or the type argument: `Bun.listen<Session>(...)`).
 
+## 7e. Calling C **[M4]**
+A program can call functions written in C (or Objective-C, or anything the C linker takes), which is how it reaches a window system or a GPU library:
+```ts
+declare function fox_present(rgba: u8[], w: int, h: int): void
+declare function fox_pump(): int
+declare function fox_name(): string
+
+function main() {
+  while (fox_pump() === 1) fox_present(frame(), 540, 960)
+}
+```
+```sh
+tov build --link shell.m --link "-framework Cocoa" app.tov -o app    # `tov run` takes --link before the program's name
+```
+- `declare function name(params): T` (optionally `export`ed) has no body; the C symbol is `name`. Pick prefixed names: a name the C library headers already declare differently is a C compile error.
+- Types: `int` is `int64_t`, `i8`..`u64` the C integer of that size, `f64` is `double`, `f32` is `float`, `bool` is `bool`. A `string` argument is a NUL-terminated `const char *` that is only valid during the call; a `string` result is copied from the returned `const char *` (`NULL` is `""`). An array of numbers is passed as a pointer to its elements (pass its length as another argument); the C code reads it and must not keep the pointer. Results are numbers, `bool`, `string` or `void`.
+- Not allowed (T0860): generics, `async`, `throws`, `inout`, optional or rest parameters, records, maps, classes, arrays of anything but numbers.
+- `--link` takes C / Objective-C / C++ sources (compiled with the program and cached by content, `-fobjc-arc` for `.m`/`.mm`), objects, archives and linker flags; repeat it, or put several words in one value.
+- On macOS the program runs on the main thread, so a window system's main-thread rules hold: call it from `main`, poll in a loop.
+- Calls into C are not checked: the declared types are a promise. A C function that blocks blocks the whole program (there is one thread).
+
 ## 8. Tests **[M0]**
 ```ts
 test("adds", () => {

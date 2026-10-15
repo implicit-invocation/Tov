@@ -1231,9 +1231,43 @@ impl<'a> Checker<'a> {
             return;
         }
         let ItemKind::Function(f) = &self.modules[m as usize].ast.items[ii as usize].kind else { return };
+        if f.is_extern {
+            self.checked_local.insert((m, ii));
+            self.check_extern_sig(f, &sig);
+            return;
+        }
         let tscope: Vec<(Sym, TyId)> = f.tparams.iter().zip(&sig.tparams).map(|(tp, &id)| (tp.name, self.types.intern(Ty::Param(id)))).collect();
         let sig = self.body_sig(f, &sig);
         self.check_body_of(m, ii, &sig, &tscope, Some(sig.ret));
+    }
+
+    /// A `declare function` crosses into C: only plain numbers, `bool`, `string` and arrays of numbers (T0860).
+    fn check_extern_sig(&mut self, f: &ast::FnDecl, sig: &Sig) {
+        let scalar = |t: &Ty| matches!(t, Ty::Bool | Ty::Int | Ty::F64 | Ty::F32 | Ty::I8 | Ty::I16 | Ty::I32 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64);
+        let mut bad: Vec<(Span, String)> = Vec::new();
+        for (p, fp) in f.params.iter().zip(&sig.params) {
+            let t = self.types.get(fp.ty).clone();
+            let ok = match &t {
+                Ty::Error | Ty::Str => true,
+                Ty::Array(e) => scalar(self.types.get(*e)),
+                other => scalar(other),
+            };
+            if !ok || fp.inout || fp.optional {
+                let shown = self.show(fp.ty);
+                bad.push((p.span, format!("`{shown}` can't be passed to a C function")));
+            }
+        }
+        let rt = self.types.get(sig.ret).clone();
+        if !matches!(rt, Ty::Error | Ty::Void | Ty::Str) && !scalar(&rt) {
+            let shown = self.show(sig.ret);
+            bad.push((f.name_span, format!("`{shown}` can't be returned from a C function")));
+        }
+        if !sig.tparams.is_empty() || sig.throws != NEVER || sig.rest {
+            bad.push((f.name_span, "a C function can't be generic, throw or take a rest parameter".to_string()));
+        }
+        for (span, msg) in bad {
+            self.report(Diagnostic::new("T0860", span, msg).note("allowed", "numbers, bool, string and arrays of numbers; results: those or void"));
+        }
     }
 
     /// The body's view of a signature: an async function's body returns the `T` of its

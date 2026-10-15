@@ -15,7 +15,10 @@ fn main() {
     let mut failed = Vec::new();
     for case in &cases {
         let name = case.file_stem().unwrap().to_string_lossy().into_owned();
-        let opts = tov::build::Options { mode: tov::codegen::Mode::Run, unchecked: false, opt: "-O1".into(), emit_c: None, symbols: false };
+        // C next to the program (`<name>.c`) implements its `declare function`s
+        let c_file = case.with_extension("c");
+        let link = if c_file.exists() { vec![c_file.to_string_lossy().into_owned()] } else { Vec::new() };
+        let opts = tov::build::Options { mode: tov::codegen::Mode::Run, unchecked: false, opt: "-O1".into(), emit_c: None, symbols: false, link };
         let built = match tov::build::build(std::slice::from_ref(case), &root, &opts) {
             Ok(b) => b,
             Err(tov::build::BuildError::Diagnostics(sm, d)) => {
@@ -43,7 +46,7 @@ fn main() {
         }
     }
     // Every test in examples/ must pass natively.
-    let opts = tov::build::Options { mode: tov::codegen::Mode::Test, unchecked: false, opt: "-O1".into(), emit_c: None, symbols: false };
+    let opts = tov::build::Options { mode: tov::codegen::Mode::Test, unchecked: false, opt: "-O1".into(), emit_c: None, symbols: false, link: Vec::new() };
     let examples = root.join("examples");
     match tov::build::build(&[examples], &root, &opts) {
         Ok(b) => {

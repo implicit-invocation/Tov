@@ -319,7 +319,7 @@ impl<'a> Parser<'a> {
         let block = self.mk_stmt(StmtKind::Block(body), span);
         let name = self.interner.intern("<script>");
         let is_async = top_level_await(&self.ast, block);
-        let f = FnDecl { name, name_span: span, tparams: Vec::new(), params: Vec::new(), ret: None, throws: None, body: block, is_async };
+        let f = FnDecl { name, name_span: span, tparams: Vec::new(), params: Vec::new(), ret: None, throws: None, body: block, is_async, is_extern: false };
         self.ast.script = Some(self.ast.items.len() as u32);
         self.ast.items.push(Item { kind: ItemKind::Function(f), span, exported: false });
     }
@@ -401,9 +401,16 @@ impl<'a> Parser<'a> {
                 self.push(Diagnostic::new("X0006", span, "namespaces are not supported").note("instead", "use one module (file) per namespace"));
                 self.skip_decl();
             }
+            // `declare function name(params): T;`: a function implemented in C
+            Tok::Declare if self.nth(1) == Tok::Function => {
+                if let Some(f) = self.extern_function() {
+                    let span = start.to(self.prev_span());
+                    self.ast.items.push(Item { kind: ItemKind::Function(f), span, exported });
+                }
+            }
             Tok::Declare => {
                 let span = self.cur_span();
-                self.err("X0021", span, "`declare` is not supported");
+                self.err("X0021", span, "`declare` is not supported (only `declare function name(...): T` for C functions)");
                 self.skip_decl();
             }
             Tok::At => {
@@ -582,7 +589,7 @@ impl<'a> Parser<'a> {
                 let span = self.prev_span();
                 self.mk_stmt(StmtKind::Block(Vec::new()), span)
             };
-            let fd = FnDecl { name, name_span, tparams, params, ret, throws, body, is_async };
+            let fd = FnDecl { name, name_span, tparams, params, ret, throws, body, is_async, is_extern: false };
             let kind = if text == "constructor" && accessor.is_none() {
                 MemberKind::Constructor(fd)
             } else if accessor == Some(true) {
@@ -843,7 +850,22 @@ impl<'a> Parser<'a> {
             return None;
         }
         let body = self.block();
-        Some(FnDecl { name, name_span, tparams, params, ret, throws, body, is_async: false })
+        Some(FnDecl { name, name_span, tparams, params, ret, throws, body, is_async: false, is_extern: false })
+    }
+
+    /// `declare function name(params): T;` (the `declare` is the current token): a signature for a C function.
+    fn extern_function(&mut self) -> Option<FnDecl> {
+        self.bump(); // declare
+        self.bump(); // function
+        let (name, name_span) = self.ident("a function name")?;
+        let tparams = self.tparams();
+        let params = self.params();
+        let ret = if self.eat(Tok::Colon) { Some(self.ty()) } else { None };
+        let throws = self.effects_clause();
+        self.terminator();
+        let span = self.prev_span();
+        let body = self.mk_stmt(StmtKind::Block(Vec::new()), span);
+        Some(FnDecl { name, name_span, tparams, params, ret, throws, body, is_async: false, is_extern: true })
     }
 
     /// `throws E` (returned) / `uses fs | net` (not supported yet).

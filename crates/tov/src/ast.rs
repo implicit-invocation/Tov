@@ -279,6 +279,8 @@ pub struct FnDecl {
     pub body: StmtId,
     /// `async function` / `async method()`; a script whose top level uses `await`.
     pub is_async: bool,
+    /// `declare function name(...): T`: implemented in C (linked with `--link`), no body.
+    pub is_extern: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -1,0 +1,28 @@
+// `declare function`: functions implemented in C (native_extern.c is linked with the program).
+declare function ext_add(a: int, b: int): int
+declare function ext_scale(x: f64, k: f32): f64
+declare function ext_is_even(n: i32): bool
+declare function ext_len(s: string): int
+declare function ext_sum(xs: f64[], n: int): f64
+declare function ext_checksum(bytes: u8[], n: int): int
+declare function ext_name(): string
+declare function ext_bump(by: int): void
+declare function ext_counter(): int
+
+function main() {
+  console.log(ext_add(40, 2))
+  console.log(ext_scale(2.5, 4))
+  console.log(ext_is_even(10), ext_is_even(7))
+  console.log(ext_len("héllo"))
+  const xs: f64[] = [1.5, 2.5, 3]
+  console.log(ext_sum(xs, xs.length))
+  const bytes: u8[] = [1, 2, 3]
+  console.log(ext_checksum(bytes, bytes.length))
+  console.log(`name: ${ext_name()}`)
+  ext_bump(5)
+  ext_bump(6)
+  console.log(ext_counter())
+  // usable as a value
+  const f = ext_add
+  console.log(f(1, 2))
+}
